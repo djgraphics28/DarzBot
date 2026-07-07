@@ -14,7 +14,10 @@ from bot.broker import (
     place_scaled_orders,
 )
 from bot.config import SL_DISTANCE, SYMBOL, TP_LEVELS, VOLUME
-from bot.db import init_db, is_auto_trade_on, recent_trades, set_state
+from bot.db import (
+    add_manual_ticket, get_state, init_db, is_auto_trade_on, is_manual_active,
+    recent_trades, set_state,
+)
 from bot.strategy import add_indicators
 
 st.set_page_config(page_title="XAUUSD Bot", layout="wide", page_icon="📈",
@@ -44,6 +47,12 @@ if "db_ready" not in st.session_state:
     init_db()
     st.session_state.db_ready = True
 
+# MT5 timeframe constants (M1/M5/M15/M30 equal their minutes; H1+ do not)
+TIMEFRAMES = {
+    "M1": 1, "M5": 5, "M15": 15, "M30": 30,
+    "H1": 16385, "H4": 16388, "D1": 16408,
+}
+
 
 def _safe(fn, fallback):
     try:
@@ -71,6 +80,10 @@ def _manual_order(side: str, vol: float, sl_dist: float, tp_levels: list,
                                   volume=vol, pending=pending, order_type=order_type)
     ok = sum(1 for _, r in results if r.get("retcode") == 10009)
     fail = len(results) - ok
+    # Tag each successful manual order so the bot pauses auto-trading for it
+    for _, r in results:
+        if r.get("retcode") == 10009 and r.get("order"):
+            add_manual_ticket(r["order"])
     label = f"{side.upper()} {order_kind}"
     if fail == 0:
         st.session_state.flash = f"{label} — {ok} leg(s) @ {entry:.2f}"
@@ -85,8 +98,20 @@ def sidebar_controls():
     sb = st.sidebar
     sb.title(f"{SYMBOL} Bot")
 
+    # Timeframe — drives BOTH the chart and what the bot trades on
+    tf_names = list(TIMEFRAMES.keys())
+    cur_tf_const = int(get_state("timeframe", "5"))
+    cur_name = next((n for n, v in TIMEFRAMES.items() if v == cur_tf_const), "M5")
+    chosen = sb.selectbox("Timeframe (chart + bot)", tf_names,
+                          index=tf_names.index(cur_name), key="chart_tf")
+    if TIMEFRAMES[chosen] != cur_tf_const:
+        set_state("timeframe", str(TIMEFRAMES[chosen]))
+        st.rerun()
+
     # Auto-trade toggle
     auto_on = is_auto_trade_on()
+    if is_manual_active():
+        sb.warning("✋ Manual trade active — auto-trading paused")
     sb.markdown(f"**Auto-Trading:** {'🟢 ON' if auto_on else '🔴 OFF'}")
     if auto_on:
         if sb.button("⏸ Stop Auto-Trade", type="secondary"):
@@ -94,6 +119,15 @@ def sidebar_controls():
     else:
         if sb.button("▶ Start Auto-Trade", type="primary"):
             set_state("auto_trade", "on"); st.rerun()
+
+    # Max concurrent trades — live, no rebuild needed
+    cur_max = int(get_state("max_positions", "1"))
+    new_max = sb.number_input("Max concurrent trades", min_value=1, max_value=50,
+                              value=cur_max, step=1, key="max_pos",
+                              help="How many auto-trade positions can be open at once.")
+    if new_max != cur_max:
+        set_state("max_positions", str(new_max))
+        st.rerun()
 
     sb.divider()
 
@@ -174,7 +208,9 @@ def live_view():
 
     # ── Chart (main focus) ──
     with chart_col:
-        df = add_indicators(get_rates(count=120))
+        tf_name = st.session_state.get("chart_tf", "M5")
+        df = add_indicators(get_rates(tf=TIMEFRAMES[tf_name], count=120))
+        st.markdown(f"**{SYMBOL} · {tf_name}**")
         fig = go.Figure()
         fig.add_trace(go.Candlestick(
             x=df["time"], open=df["open"], high=df["high"], low=df["low"], close=df["close"],

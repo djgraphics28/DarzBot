@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from bot.config import DATABASE_URL
+from bot.config import DATABASE_URL, MAX_POSITIONS, TIMEFRAME
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,14 @@ def init_db() -> None:
             INSERT INTO bot_state (key, value) VALUES ('auto_trade', 'off')
             ON CONFLICT (key) DO NOTHING
         """)
+        cur.execute("""
+            INSERT INTO bot_state (key, value) VALUES ('max_positions', %s)
+            ON CONFLICT (key) DO NOTHING
+        """, (str(MAX_POSITIONS),))
+        cur.execute("""
+            INSERT INTO bot_state (key, value) VALUES ('timeframe', %s)
+            ON CONFLICT (key) DO NOTHING
+        """, (str(TIMEFRAME),))
         # Migrate older tables that predate these columns
         cur.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ")
         cur.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS final_profit NUMERIC")
@@ -73,6 +81,50 @@ def set_state(key: str, value: str) -> None:
 
 def is_auto_trade_on() -> bool:
     return get_state("auto_trade", "off") == "on"
+
+
+def get_max_positions() -> int:
+    """Live max concurrent trades (dashboard-adjustable), fallback to config."""
+    try:
+        return int(get_state("max_positions", str(MAX_POSITIONS)))
+    except (ValueError, TypeError):
+        return MAX_POSITIONS
+
+
+def get_timeframe() -> int:
+    """Live trading timeframe as an MT5 constant (dashboard-adjustable)."""
+    try:
+        return int(get_state("timeframe", str(TIMEFRAME)))
+    except (ValueError, TypeError):
+        return TIMEFRAME
+
+
+# ── Manual-trade interlock ───────────────────────────────────────────────────
+# Tickets the user opened manually from the dashboard. While any of these is
+# live, the bot pauses ALL auto-trading (entries and auto-close).
+def get_manual_tickets() -> set:
+    raw = get_state("manual_tickets", "")
+    return {int(x) for x in raw.split(",") if x.strip()}
+
+
+def _save_manual_tickets(tickets: set) -> None:
+    set_state("manual_tickets", ",".join(str(t) for t in sorted(tickets)))
+
+
+def add_manual_ticket(ticket: int) -> None:
+    t = get_manual_tickets()
+    t.add(int(ticket))
+    _save_manual_tickets(t)
+
+
+def remove_manual_ticket(ticket: int) -> None:
+    t = get_manual_tickets()
+    t.discard(int(ticket))
+    _save_manual_tickets(t)
+
+
+def is_manual_active() -> bool:
+    return bool(get_manual_tickets())
 
 
 def log_trade(symbol: str, side: str, volume: float, price: float,

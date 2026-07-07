@@ -5,9 +5,10 @@ import sys
 import threading
 import time
 
-from bot import alerts, broker, db
+from bot import ai_analyst, alerts, broker, db
 from bot.config import (
-    MAX_POSITIONS, POLL_INTERVAL, SL_DISTANCE, SYMBOL, TP_LEVELS, VOLUME,
+    AI_ENABLED, AI_MIN_CONFIDENCE, MAX_POSITIONS, POLL_INTERVAL, PROFIT_TARGET,
+    SCALP_MODE, SL_DISTANCE, SYMBOL, TP_LEVELS, VOLUME,
 )
 from bot.position_tracker import monitor_loop
 from bot import strategy
@@ -27,6 +28,40 @@ def _handle_signal(sig, frame):
     _stop.set()
 
 
+# XAUUSD standard contract size (oz per 1.00 lot)
+_CONTRACT_SIZE = 100
+
+
+def _ai_approves(side: str) -> bool:
+    """Ask Claude to confirm the entry against the last hour's structure.
+    Fail-open: if AI is off or unreachable, don't block the technical signal."""
+    if not AI_ENABLED:
+        return True
+    decision = ai_analyst.analyze()
+    if decision is None:
+        logger.info("AI unavailable — proceeding on technical signal")
+        return True
+    agree = decision.signal == side and decision.confidence >= AI_MIN_CONFIDENCE
+    verdict = "confirms" if agree else "VETOES"
+    logger.info("AI %s %s  structure=%s  conf=%s  (%s)",
+                verdict, side.upper(), decision.structure,
+                decision.confidence, decision.reason)
+    return agree
+
+
+def _has_margin(price: float) -> bool:
+    """True if there is enough free margin to open one more VOLUME lot.
+    Estimates required margin from price, contract size, and account leverage."""
+    try:
+        acct = broker.get_account()
+        free = float(acct.get("free_margin", 0))
+        lev = float(acct.get("leverage", 100)) or 100
+        required = price * _CONTRACT_SIZE * VOLUME / lev
+        return free >= required * 1.05  # 5% buffer
+    except Exception:
+        return True  # if we can't check, let the broker decide
+
+
 def signal_loop():
     """Checks for entry signals on every new M5 candle (~60s)."""
     logger.info("Signal loop started  symbol=%s  volume=%s  interval=%ss",
@@ -39,28 +74,71 @@ def signal_loop():
                 _stop.wait(POLL_INTERVAL)
                 continue
 
-            # Skip entry if already at max open positions
-            if MAX_POSITIONS > 0:
+            # Manual trade running -> hand control to the user, pause the bot
+            if db.is_manual_active():
+                logger.info("Manual trade active — auto-trading paused")
+                _stop.wait(POLL_INTERVAL)
+                continue
+
+            # Skip entry if already at max open positions (live, dashboard-adjustable)
+            max_pos = db.get_max_positions()
+            if max_pos > 0:
                 open_pos = broker.get_positions(SYMBOL)
-                if len(open_pos) >= MAX_POSITIONS:
-                    logger.info("Max positions reached (%s) — skipping signal check", MAX_POSITIONS)
+                if len(open_pos) >= max_pos:
+                    logger.info("Max positions reached (%s/%s) — skipping entry",
+                                len(open_pos), max_pos)
                     _stop.wait(POLL_INTERVAL)
                     continue
 
-            df = broker.get_rates()
+            tf = db.get_timeframe()  # trading timeframe set from the dashboard
+            df = broker.get_rates(tf=tf)
             sig = get_signal(df)
 
             # Live indicator snapshot so you can see the loop is alive and why
             ind = add_indicators(df)
             snap, prev = ind.iloc[-1], ind.iloc[-2]
             trend = strategy.trend_of(snap, prev)
+            strong = strategy.trend_strong(snap)
             logger.info(
-                "AUTO ON  close=%.2f  emaF=%.2f  emaS=%.2f  trend=%s  %%K=%.1f  %%D=%.1f  -> signal=%s",
-                snap["close"], snap["ema_fast"], snap["ema_slow"], trend or "flat",
-                snap["%K"], snap["%D"], sig or "none",
+                "AUTO ON  tf=%s  close=%.2f  trend=%s  strong=%s  rsi=%.0f  atr=%.2f  %%K=%.1f -> signal=%s",
+                tf, snap["close"], trend or "flat", strong, snap.get("rsi", 0),
+                snap.get("atr", 0), snap["%K"], sig or "none",
             )
 
-            if sig:
+            # Cooldown after a losing close
+            if time.time() < float(db.get_state("cooldown_until", "0")):
+                logger.info("In loss cooldown — skipping entry")
+                _stop.wait(POLL_INTERVAL)
+                continue
+
+            if SCALP_MODE:
+                # Follow the trend (filtered by strength + momentum). Enter a single
+                # market trade (no SL/TP) when flat; monitor closes at +$PROFIT_TARGET.
+                side = strategy.scalp_side(df)
+                if side is None:
+                    logger.debug("Scalp: no qualified trend entry — waiting")
+                elif not _has_margin(snap["close"]):
+                    logger.info("Margin full (%s open) — need higher leverage or lower lot; "
+                                "not entering", len(open_pos))
+                elif not _ai_approves(side):
+                    pass  # AI vetoed — already logged; wait for the next cycle
+                else:
+                    tick = broker.get_tick()
+                    price = tick["ask"] if side == "buy" else tick["bid"]
+                    result = broker.place_order(side, sl=0.0, tp=0.0)
+                    retcode = result.get("retcode", -1)
+                    order_id = result.get("order", 0)
+                    comment = result.get("comment", "")
+                    db.log_trade(SYMBOL, side, VOLUME, price, retcode, order_id, comment)
+                    if retcode == 10009:
+                        alerts.order_placed(side, SYMBOL, result.get("price", price), VOLUME)
+                        logger.info("Scalp entry  %s  price=%.2f  target=+$%.1f  order_id=%s",
+                                    side.upper(), price, PROFIT_TARGET, order_id)
+                    else:
+                        alerts.order_failed(side, SYMBOL, retcode, comment)
+                        logger.warning("Scalp entry failed  retcode=%s  %s", retcode, comment)
+
+            elif sig:
                 tick = broker.get_tick()
                 price = tick["ask"] if sig == "buy" else tick["bid"]
                 logger.info("Signal: %s  price=%.2f  opening %d TP leg(s): %s",

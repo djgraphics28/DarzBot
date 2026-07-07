@@ -2,7 +2,9 @@
 import logging
 import time
 from bot import alerts, broker, db
-from bot.config import MONITOR_INTERVAL, SYMBOL
+from bot.config import (
+    MONITOR_INTERVAL, PROFIT_TARGET, SCALP_MODE, SYMBOL, MAX_LOSS, LOSS_COOLDOWN,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,21 @@ def monitor_loop(stop_event):
             positions = broker.get_positions(SYMBOL)
             current_tickets = {p["ticket"] for p in positions}
 
+            # Manual-trade interlock: which tickets did the user open manually,
+            # and reconcile the set so cancelled/closed manual tickets self-clear.
+            manual = db.get_manual_tickets()
+            if manual:
+                live = current_tickets | {p.get("identifier") for p in positions}
+                try:
+                    live |= {o["ticket"] for o in broker.get_pending(SYMBOL)}
+                except Exception:
+                    pass
+                for t in manual - live:
+                    db.remove_manual_ticket(t)
+
+            def _is_manual(pos) -> bool:
+                return pos["ticket"] in manual or pos.get("identifier") in manual
+
             # Detect newly closed positions
             for ticket, snap in list(known.items()):
                 if ticket not in current_tickets:
@@ -31,6 +48,11 @@ def monitor_loop(stop_event):
                         snap["symbol"], snap["side"], snap["profit"], ticket
                     )
                     db.log_close(ticket, snap["profit"])
+                    db.remove_manual_ticket(ticket)
+                    # Cooldown after a losing close, so we don't instantly re-enter
+                    if snap["profit"] < 0 and LOSS_COOLDOWN > 0:
+                        db.set_state("cooldown_until", str(time.time() + LOSS_COOLDOWN))
+                        logger.info("Loss cooldown: pausing entries for %ss", LOSS_COOLDOWN)
                     del known[ticket]
 
             # Update / register open positions
@@ -39,6 +61,30 @@ def monitor_loop(stop_event):
                 profit = pos.get("profit", 0.0)
                 side = "buy" if pos.get("type") == 0 else "sell"
                 price = pos.get("price_current", 0.0)
+
+                # Never auto-manage a manually-opened trade — leave it to the user
+                if _is_manual(pos):
+                    continue
+
+                # Safety net (any mode): emergency close on large loss
+                if MAX_LOSS > 0 and profit <= -MAX_LOSS:
+                    res = broker.close_position(ticket)
+                    logger.warning("MAX LOSS hit  ticket=%s  profit=%.2f -> %s",
+                                   ticket, profit,
+                                   "closed" if res.get("retcode") == 10009 else res.get("comment"))
+                    continue
+
+                # Scalp exit: bank profit as soon as it hits the target
+                if SCALP_MODE and profit >= PROFIT_TARGET:
+                    res = broker.close_position(ticket)
+                    if res.get("retcode") == 10009:
+                        logger.info("Profit target hit  ticket=%s  profit=%.2f -> closed",
+                                    ticket, profit)
+                    else:
+                        logger.warning("Target-close failed  ticket=%s  %s",
+                                       ticket, res.get("comment"))
+                    # Skip further processing this cycle; closure detected next loop
+                    continue
 
                 prev = known.get(ticket)
                 known[ticket] = {
