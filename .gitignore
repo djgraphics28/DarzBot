@@ -1,0 +1,6 @@
+.env
+vm_bridge/start_bridge.bat
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
