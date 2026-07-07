@@ -10,6 +10,7 @@ from bot.config import (
     MAX_POSITIONS, POLL_INTERVAL, SL_DISTANCE, SYMBOL, TP_LEVELS, VOLUME,
 )
 from bot.position_tracker import monitor_loop
+from bot import strategy
 from bot.strategy import add_indicators, get_signal
 
 logging.basicConfig(
@@ -50,10 +51,13 @@ def signal_loop():
             sig = get_signal(df)
 
             # Live indicator snapshot so you can see the loop is alive and why
-            snap = add_indicators(df).iloc[-1]
+            ind = add_indicators(df)
+            snap, prev = ind.iloc[-1], ind.iloc[-2]
+            trend = strategy.trend_of(snap, prev)
             logger.info(
-                "AUTO ON  close=%.2f  ema=%.2f  %%K=%.1f  %%D=%.1f  -> signal=%s",
-                snap["close"], snap["ema"], snap["%K"], snap["%D"], sig or "none",
+                "AUTO ON  close=%.2f  emaF=%.2f  emaS=%.2f  trend=%s  %%K=%.1f  %%D=%.1f  -> signal=%s",
+                snap["close"], snap["ema_fast"], snap["ema_slow"], trend or "flat",
+                snap["%K"], snap["%D"], sig or "none",
             )
 
             if sig:

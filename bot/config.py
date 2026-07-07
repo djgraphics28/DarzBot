@@ -22,8 +22,13 @@ STOCH_D = int(os.getenv("STOCH_D", "3"))
 OVERSOLD = float(os.getenv("OVERSOLD", "20"))
 OVERBOUGHT = float(os.getenv("OVERBOUGHT", "80"))
 
-# EMA filter
-EMA_PERIOD = int(os.getenv("EMA_PERIOD", "50"))
+# Trend filter — fast/slow EMA. Trend = up when fast > slow (and slow rising).
+EMA_FAST = int(os.getenv("EMA_FAST", "21"))
+EMA_SLOW = int(os.getenv("EMA_SLOW", "50"))
+EMA_PERIOD = EMA_SLOW  # kept for the chart / backward compatibility
+
+# Require the slow EMA to be sloping in the trade direction (confirms trend)
+REQUIRE_SLOPE = os.getenv("REQUIRE_SLOPE", "true").lower() == "true"
 
 # Risk management — distance in PRICE units (USD for XAUUSD). 0 = disabled.
 # Example: SL_DISTANCE=3.0 means stop 3 dollars away.

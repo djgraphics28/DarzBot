@@ -40,6 +40,9 @@ def init_db() -> None:
             INSERT INTO bot_state (key, value) VALUES ('auto_trade', 'off')
             ON CONFLICT (key) DO NOTHING
         """)
+        # Migrate older tables that predate these columns
+        cur.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ")
+        cur.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS final_profit NUMERIC")
         conn.commit()
     logger.info("DB initialised")
 

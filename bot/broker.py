@@ -60,9 +60,13 @@ def place_order(side: str, symbol: str = SYMBOL, volume: float = VOLUME,
 
 
 def place_pending(side: str, entry: float, symbol: str = SYMBOL,
-                  volume: float = VOLUME, sl: float = 0.0, tp: float = 0.0) -> dict:
+                  volume: float = VOLUME, sl: float = 0.0, tp: float = 0.0,
+                  order_type: str = "") -> dict:
+    """order_type: '' (auto) or one of buy_limit/sell_limit/buy_stop/sell_stop."""
     payload = {"symbol": symbol, "side": side, "volume": volume,
                "price": entry, "sl": sl, "tp": tp}
+    if order_type:
+        payload["order_type"] = order_type
     r = requests.post(_url("/pending"), json=payload, timeout=10)
     r.raise_for_status()
     return r.json()
@@ -82,15 +86,17 @@ def cancel_pending(ticket: int) -> dict:
 
 def place_scaled_orders(side: str, entry: float, sl_distance: float,
                         tp_levels: list, symbol: str = SYMBOL,
-                        volume: float = VOLUME, pending: bool = False) -> list:
+                        volume: float = VOLUME, pending: bool = False,
+                        order_type: str = "") -> list:
     """Open one trade per TP level (scaling out). All share the same SL.
-    If pending=True, places limit/stop orders at `entry`; else market orders.
-    Returns a list of (tp_level, result) tuples."""
+    If pending=True, places limit/stop orders at `entry` (order_type forces the
+    exact kind); else market orders. Returns a list of (tp_level, result) tuples."""
     results = []
     for tp_dist in tp_levels:
         sl, tp = compute_sl_tp(side, entry, sl_distance, tp_dist)
         if pending:
-            res = place_pending(side, entry, symbol=symbol, volume=volume, sl=sl, tp=tp)
+            res = place_pending(side, entry, symbol=symbol, volume=volume,
+                                sl=sl, tp=tp, order_type=order_type)
         else:
             res = place_order(side, symbol=symbol, volume=volume, sl=sl, tp=tp)
         results.append((tp_dist, res))

@@ -83,25 +83,36 @@ def place_order():
     })
 
 
+_PENDING_TYPES = {
+    "buy_limit":  mt5.ORDER_TYPE_BUY_LIMIT,
+    "sell_limit": mt5.ORDER_TYPE_SELL_LIMIT,
+    "buy_stop":   mt5.ORDER_TYPE_BUY_STOP,
+    "sell_stop":  mt5.ORDER_TYPE_SELL_STOP,
+}
+
+
 @app.route("/pending", methods=["POST"])
 def place_pending():
     """Place a pending order at a specific entry price.
-    Picks LIMIT vs STOP automatically based on entry vs current price."""
+    Pass "order_type" (buy_limit/sell_limit/buy_stop/sell_stop) for explicit control,
+    otherwise LIMIT vs STOP is inferred from entry vs current price."""
     data = request.json
     symbol = data.get("symbol", "XAUUSD")
-    side = data["side"]           # "buy" | "sell"
+    side = data.get("side", "buy")   # used only when order_type not given
     volume = float(data.get("volume", 0.01))
-    entry = float(data["price"])  # requested entry price
+    entry = float(data["price"])     # requested entry price
     sl = data.get("sl", 0.0)
     tp = data.get("tp", 0.0)
+    explicit = data.get("order_type")  # optional
 
-    tick = mt5.symbol_info_tick(symbol)
-    if side == "buy":
-        # below market -> BUY LIMIT, above market -> BUY STOP
-        order_type = mt5.ORDER_TYPE_BUY_LIMIT if entry < tick.ask else mt5.ORDER_TYPE_BUY_STOP
+    if explicit and explicit in _PENDING_TYPES:
+        order_type = _PENDING_TYPES[explicit]
     else:
-        # above market -> SELL LIMIT, below market -> SELL STOP
-        order_type = mt5.ORDER_TYPE_SELL_LIMIT if entry > tick.bid else mt5.ORDER_TYPE_SELL_STOP
+        tick = mt5.symbol_info_tick(symbol)
+        if side == "buy":
+            order_type = mt5.ORDER_TYPE_BUY_LIMIT if entry < tick.ask else mt5.ORDER_TYPE_BUY_STOP
+        else:
+            order_type = mt5.ORDER_TYPE_SELL_LIMIT if entry > tick.bid else mt5.ORDER_TYPE_SELL_STOP
 
     result = mt5.order_send({
         "action": mt5.TRADE_ACTION_PENDING,
