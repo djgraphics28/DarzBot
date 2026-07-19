@@ -9,15 +9,37 @@ services:
     networks:
       - botnet
 
-  dashboard:
-    build: .
-    command: streamlit run dashboard/app.py --server.port=8501 --server.address=0.0.0.0
+  # Laravel 13 + Inertia/React dashboard (replaces the old Streamlit `dashboard`
+  # service). The app currently lives in the darzbot repo — adjust the build
+  # path if you move it into this repo as ./webapp.
+  webapp:
+    build: ../../LARAVEL/darzbot
     restart: unless-stopped
     ports:
-      - "8501:8501"
+      - "8000:8000"
     env_file: .env
+    environment:
+      # APP_KEY must be set in .env (see .env.example)
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - APP_URL=http://localhost:8000
+      - DB_CONNECTION=pgsql
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_DATABASE=tradingbot
+      - DB_USERNAME=botuser
+      - DB_PASSWORD=botpass
+      - SESSION_DRIVER=database
+      - CACHE_STORE=database
+      - QUEUE_CONNECTION=database
+      - MAIL_MAILER=log
+      # MT5_BRIDGE_URL comes from .env; when unset, the app derives it from
+      # VM_IP/VM_PORT (same variables the bot uses). The Windows VM must be
+      # reachable FROM INSIDE this container — a host-only VM adapter that only
+      # the docker host can reach will not work; use a bridged/shared network.
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     networks:
       - botnet
 

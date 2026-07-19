@@ -1,30 +1,76 @@
-"""Flask bridge — runs inside the Windows VM alongside MT5."""
+"""Flask bridge — runs inside the Windows VM alongside MT5.
+
+The MT5 connection is checked before every request and re-established
+automatically, so the bridge survives the terminal being closed/reopened
+(the old version connected once at startup and returned "IPC send failed"
+forever after the terminal restarted).
+"""
+import logging
 import os
+import threading
 from flask import Flask, jsonify, request
 import MetaTrader5 as mt5
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s  %(levelname)-7s %(message)s")
+log = logging.getLogger("flask_mt5")
 
 app = Flask(__name__)
 
 # Credentials come from environment variables — never hardcode them here.
 # Set them in the VM before running, e.g. (PowerShell):
 #   $env:MT5_LOGIN="5052702771"; $env:MT5_PASSWORD="..."; $env:MT5_SERVER="Broker-Demo"
+# All optional: with no credentials the bridge attaches to the account already
+# logged in inside the MT5 terminal. Set MT5_PATH if the terminal is installed
+# somewhere non-standard, e.g. C:\Program Files\MetaTrader 5\terminal64.exe
 MT5_LOGIN = os.getenv("MT5_LOGIN")
 MT5_PASSWORD = os.getenv("MT5_PASSWORD")
 MT5_SERVER = os.getenv("MT5_SERVER")
+MT5_PATH = os.getenv("MT5_PATH")
 
-if MT5_LOGIN and MT5_PASSWORD and MT5_SERVER:
-    ok = mt5.initialize(login=int(MT5_LOGIN), password=MT5_PASSWORD, server=MT5_SERVER)
-else:
-    # Falls back to the account already logged in inside the MT5 terminal
-    ok = mt5.initialize()
+_connect_lock = threading.Lock()
 
-if not ok:
-    raise RuntimeError(f"MT5 init failed: {mt5.last_error()}")
+
+def _connect() -> bool:
+    """(Re)initialize the MT5 connection. Returns True when connected."""
+    mt5.shutdown()  # drop any dead half-open connection first
+
+    kwargs = {}
+    if MT5_PATH:
+        kwargs["path"] = MT5_PATH
+    if MT5_LOGIN and MT5_PASSWORD and MT5_SERVER:
+        kwargs.update(login=int(MT5_LOGIN), password=MT5_PASSWORD, server=MT5_SERVER)
+
+    ok = mt5.initialize(**kwargs)
+    if ok:
+        info = mt5.account_info()
+        log.info("MT5 connected  login=%s  server=%s",
+                 getattr(info, "login", "?"), getattr(info, "server", "?"))
+    else:
+        log.warning("MT5 initialize failed: %s", mt5.last_error())
+    return ok
+
+
+def _is_connected() -> bool:
+    """terminal_info() returns None whenever the IPC link is dead."""
+    return mt5.terminal_info() is not None
+
+
+@app.before_request
+def _ensure_mt5():
+    """Reconnect on demand so a terminal restart never requires a bridge restart."""
+    if request.path == "/ping":
+        return None
+    if not _is_connected():
+        with _connect_lock:
+            if not _is_connected() and not _connect():
+                return jsonify({"error": ["mt5_disconnected", str(mt5.last_error())]}), 503
+    return None
 
 
 @app.route("/ping")
 def ping():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "mt5": _is_connected()})
 
 
 @app.route("/rates")
@@ -225,4 +271,9 @@ def get_history():
 
 
 if __name__ == "__main__":
+    # Connect eagerly so problems show up in the console immediately, but do
+    # NOT crash if MT5 isn't ready yet — before_request will keep retrying.
+    if not _connect():
+        log.warning("Starting anyway — will retry connecting on each request. "
+                    "Make sure the MT5 terminal is running and logged in.")
     app.run(host="0.0.0.0", port=5000, debug=False)
