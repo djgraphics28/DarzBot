@@ -1,7 +1,18 @@
 """Thin wrapper around the Flask MT5 bridge."""
 import requests
 import pandas as pd
-from bot.config import MT5_BASE_URL, SYMBOL, TIMEFRAME, VOLUME
+from bot.config import (MT5_BASE_URL, MT5_LOGIN, MT5_PASSWORD, MT5_SERVER,
+                        SYMBOL, TIMEFRAME, VOLUME)
+
+# One session for every call so the account credentials ride along as headers
+# and the bridge connects to the right MT5 account per request.
+_session = requests.Session()
+if MT5_LOGIN and MT5_PASSWORD and MT5_SERVER:
+    _session.headers.update({
+        "X-MT5-Login": str(MT5_LOGIN),
+        "X-MT5-Password": MT5_PASSWORD,
+        "X-MT5-Server": MT5_SERVER,
+    })
 
 
 def _url(path: str) -> str:
@@ -12,7 +23,7 @@ def ping() -> bool:
     """Bridge is reachable if it answers on /account (works on all bridge versions).
     Any HTTP response means the server is up; only a connection error means down."""
     try:
-        r = requests.get(_url("/account"), timeout=5)
+        r = _session.get(_url("/account"), timeout=5)
         return r.status_code == 200
     except requests.RequestException:
         return False
@@ -25,7 +36,7 @@ _RATE_COLUMNS = ["time", "open", "high", "low", "close",
 
 
 def get_rates(symbol: str = SYMBOL, tf: int = TIMEFRAME, count: int = 200) -> pd.DataFrame:
-    r = requests.get(_url("/rates"), params={"symbol": symbol, "tf": tf, "count": count}, timeout=10)
+    r = _session.get(_url("/rates"), params={"symbol": symbol, "tf": tf, "count": count}, timeout=10)
     r.raise_for_status()
     rows = r.json()
     df = pd.DataFrame(rows, columns=_RATE_COLUMNS[:len(rows[0])] if rows else _RATE_COLUMNS)
@@ -34,7 +45,7 @@ def get_rates(symbol: str = SYMBOL, tf: int = TIMEFRAME, count: int = 200) -> pd
 
 
 def get_tick(symbol: str = SYMBOL) -> dict:
-    r = requests.get(_url("/tick"), params={"symbol": symbol}, timeout=5)
+    r = _session.get(_url("/tick"), params={"symbol": symbol}, timeout=5)
     r.raise_for_status()
     return r.json()
 
@@ -54,7 +65,7 @@ def compute_sl_tp(side: str, entry: float, sl_distance: float, tp_distance: floa
 def place_order(side: str, symbol: str = SYMBOL, volume: float = VOLUME,
                 sl: float = 0.0, tp: float = 0.0) -> dict:
     payload = {"symbol": symbol, "side": side, "volume": volume, "sl": sl, "tp": tp}
-    r = requests.post(_url("/order"), json=payload, timeout=10)
+    r = _session.post(_url("/order"), json=payload, timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -67,19 +78,19 @@ def place_pending(side: str, entry: float, symbol: str = SYMBOL,
                "price": entry, "sl": sl, "tp": tp}
     if order_type:
         payload["order_type"] = order_type
-    r = requests.post(_url("/pending"), json=payload, timeout=10)
+    r = _session.post(_url("/pending"), json=payload, timeout=10)
     r.raise_for_status()
     return r.json()
 
 
 def get_pending(symbol: str = SYMBOL) -> list:
-    r = requests.get(_url("/pending"), params={"symbol": symbol}, timeout=5)
+    r = _session.get(_url("/pending"), params={"symbol": symbol}, timeout=5)
     r.raise_for_status()
     return r.json()
 
 
 def cancel_pending(ticket: int) -> dict:
-    r = requests.post(_url("/cancel"), json={"ticket": ticket}, timeout=10)
+    r = _session.post(_url("/cancel"), json={"ticket": ticket}, timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -104,24 +115,24 @@ def place_scaled_orders(side: str, entry: float, sl_distance: float,
 
 
 def get_positions(symbol: str = SYMBOL) -> list:
-    r = requests.get(_url("/positions"), params={"symbol": symbol}, timeout=5)
+    r = _session.get(_url("/positions"), params={"symbol": symbol}, timeout=5)
     r.raise_for_status()
     return r.json()
 
 
 def get_account() -> dict:
-    r = requests.get(_url("/account"), timeout=5)
+    r = _session.get(_url("/account"), timeout=5)
     r.raise_for_status()
     return r.json()
 
 
 def get_history(days: int = 7) -> list:
-    r = requests.get(_url("/history"), params={"days": days}, timeout=10)
+    r = _session.get(_url("/history"), params={"days": days}, timeout=10)
     r.raise_for_status()
     return r.json()
 
 
 def close_position(ticket: int) -> dict:
-    r = requests.post(_url("/close"), json={"ticket": ticket}, timeout=10)
+    r = _session.post(_url("/close"), json={"ticket": ticket}, timeout=10)
     r.raise_for_status()
     return r.json()

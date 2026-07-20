@@ -7,6 +7,15 @@ VM_IP = os.getenv("VM_IP", "192.168.64.2")
 VM_PORT = os.getenv("VM_PORT", "5000")
 MT5_BASE_URL = f"http://{VM_IP}:{VM_PORT}"
 
+# MT5 account credentials — sent to the bridge as X-MT5-* headers on every
+# request so the bridge logs into THIS account dynamically instead of relying
+# on env vars set inside the VM. Leave empty to use the bridge's own fallback.
+MT5_LOGIN = os.getenv("MT5_LOGIN", "")
+MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
+MT5_SERVER = os.getenv("MT5_SERVER", "")
+
+# Instrument name. Cent (USC) accounts usually trade a different symbol,
+# e.g. SYMBOL=XAUUSD.CS — set it to match the account above.
 SYMBOL = os.getenv("SYMBOL", "XAUUSD")
 TIMEFRAME = int(os.getenv("TIMEFRAME", "5"))   # minutes (M5)
 VOLUME = float(os.getenv("VOLUME", "0.01"))
