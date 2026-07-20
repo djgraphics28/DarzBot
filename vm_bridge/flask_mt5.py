@@ -337,4 +337,7 @@ if __name__ == "__main__":
     if not _connect(MT5_LOGIN, MT5_PASSWORD, MT5_SERVER):
         log.warning("Starting anyway — will retry connecting on each request. "
                     "Make sure the MT5 terminal is running and logged in.")
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    # BRIDGE_PORT lets a second bridge (for a copy-trading follower terminal)
+    # run alongside the first, e.g. 5001. Pair it with MT5_PATH pointing at
+    # that terminal's portable installation.
+    app.run(host="0.0.0.0", port=int(os.getenv("BRIDGE_PORT", "5000")), debug=False)
