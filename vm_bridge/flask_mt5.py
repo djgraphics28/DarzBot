@@ -263,6 +263,28 @@ def cancel_pending():
     return jsonify({"retcode": result.retcode, "comment": result.comment})
 
 
+@app.route("/modify", methods=["POST"])
+def modify_position():
+    """Change the SL/TP of an open position. Prices are absolute; 0 clears a level."""
+    data = request.json
+    ticket = int(data["ticket"])
+    positions = mt5.positions_get(ticket=ticket)
+    if not positions:
+        return jsonify({"error": "position not found"}), 404
+
+    pos = positions[0]
+    result = mt5.order_send({
+        "action": mt5.TRADE_ACTION_SLTP,
+        "symbol": pos.symbol,
+        "position": ticket,
+        "sl": float(data.get("sl", 0.0)),
+        "tp": float(data.get("tp", 0.0)),
+        "magic": 12345,
+        "comment": "modify",
+    })
+    return jsonify({"retcode": result.retcode, "comment": result.comment})
+
+
 @app.route("/positions")
 def get_positions():
     symbol = request.args.get("symbol", "XAUUSD")
