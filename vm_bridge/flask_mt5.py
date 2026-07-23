@@ -170,8 +170,11 @@ def place_order():
     symbol = data.get("symbol", "XAUUSD")
     side = data["side"]  # "buy" | "sell"
     volume = float(data.get("volume", 0.01))
-    sl = data.get("sl", 0.0)
-    tp = data.get("tp", 0.0)
+    # Callers that JSON-encode a whole-number SL/TP (e.g. PHP's json_encode(0.0)
+    # -> "0") send an int here; mt5.order_send() rejects non-float sl/tp with
+    # "Invalid sl argument", so always coerce explicitly.
+    sl = float(data.get("sl", 0.0))
+    tp = float(data.get("tp", 0.0))
 
     if not _select_symbol(symbol):
         return jsonify({"error": ["unknown_symbol", symbol]}), 404
@@ -222,8 +225,10 @@ def place_pending():
     side = data.get("side", "buy")   # used only when order_type not given
     volume = float(data.get("volume", 0.01))
     entry = float(data["price"])     # requested entry price
-    sl = data.get("sl", 0.0)
-    tp = data.get("tp", 0.0)
+    # See place_order() above — coerce in case a whole-number SL/TP arrived
+    # as a JSON int rather than a float.
+    sl = float(data.get("sl", 0.0))
+    tp = float(data.get("tp", 0.0))
     explicit = data.get("order_type")  # optional
 
     if not _select_symbol(symbol):
