@@ -150,6 +150,20 @@ def get_tick():
     return jsonify({"bid": tick.bid, "ask": tick.ask, "time": tick.time})
 
 
+def _order_send(request_dict):
+    """mt5.order_send() returns None (not an exception) when MT5 rejects the
+    request outright — e.g. an unsupported filling mode or invalid stops —
+    so every caller must check for that before reading .retcode/.comment/etc."""
+    result = mt5.order_send(request_dict)
+    if result is None:
+        log.warning("order_send returned None: %s", mt5.last_error())
+    return result
+
+
+def _order_error():
+    return jsonify({"error": mt5.last_error(), "comment": "order_send rejected the request"}), 500
+
+
 @app.route("/order", methods=["POST"])
 def place_order():
     data = request.json
@@ -179,7 +193,9 @@ def place_order():
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
-    result = mt5.order_send(request_dict)
+    result = _order_send(request_dict)
+    if result is None:
+        return _order_error()
     return jsonify({
         "retcode": result.retcode,
         "order": result.order,
@@ -221,7 +237,7 @@ def place_pending():
         else:
             order_type = mt5.ORDER_TYPE_SELL_LIMIT if entry > tick.bid else mt5.ORDER_TYPE_SELL_STOP
 
-    result = mt5.order_send({
+    result = _order_send({
         "action": mt5.TRADE_ACTION_PENDING,
         "symbol": symbol,
         "volume": volume,
@@ -233,8 +249,13 @@ def place_pending():
         "magic": 12345,
         "comment": "xauusd-bot-pending",
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        # Pending orders (TRADE_ACTION_PENDING) aren't executed immediately,
+        # so most brokers reject IOC/FOK filling on them — RETURN is the
+        # filling mode MT5 expects here (IOC is fine for market orders above).
+        "type_filling": mt5.ORDER_FILLING_RETURN,
     })
+    if result is None:
+        return _order_error()
     return jsonify({
         "retcode": result.retcode,
         "order": result.order,
@@ -256,10 +277,12 @@ def get_pending():
 def cancel_pending():
     data = request.json
     ticket = int(data["ticket"])
-    result = mt5.order_send({
+    result = _order_send({
         "action": mt5.TRADE_ACTION_REMOVE,
         "order": ticket,
     })
+    if result is None:
+        return _order_error()
     return jsonify({"retcode": result.retcode, "comment": result.comment})
 
 
@@ -273,7 +296,7 @@ def modify_position():
         return jsonify({"error": "position not found"}), 404
 
     pos = positions[0]
-    result = mt5.order_send({
+    result = _order_send({
         "action": mt5.TRADE_ACTION_SLTP,
         "symbol": pos.symbol,
         "position": ticket,
@@ -282,6 +305,8 @@ def modify_position():
         "magic": 12345,
         "comment": "modify",
     })
+    if result is None:
+        return _order_error()
     return jsonify({"retcode": result.retcode, "comment": result.comment})
 
 
@@ -307,7 +332,7 @@ def close_position():
     tick = mt5.symbol_info_tick(pos.symbol)
     price = tick.bid if side == "sell" else tick.ask
 
-    result = mt5.order_send({
+    result = _order_send({
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": pos.symbol,
         "volume": pos.volume,
@@ -320,6 +345,8 @@ def close_position():
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     })
+    if result is None:
+        return _order_error()
     return jsonify({"retcode": result.retcode, "comment": result.comment})
 
 
